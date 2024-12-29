@@ -1,0 +1,17 @@
+.mode-switch {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.mode-switch button {
+  padding: 10px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.mode-switch button.active {
+  background-color: #007bff;
+  color: white;
+}

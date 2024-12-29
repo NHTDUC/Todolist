@@ -1,10 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
 import "./App.css";
+import { auth, db } from "./firebaseConfig";
+import {
+  collection,
+  doc,
+  setDoc,
+  getDocs,
+  query,
+  where,
+  onSnapshot,
+} from "firebase/firestore";
+import Auth from "./components/Auth";
+import AddTask from "./components/AddTask";
+import Filter from "./components/Filter";
+import ModeSwitch from "./components/ModeSwitch";
 import TaskList from "./components/TaskList";
 
 function App() {
-  const today = new Date().today;
-
   const [task, setTask] = useState("");
   const [tasks, setTasks] = useState([]);
   const [filter, setFilter] = useState("all");
@@ -15,21 +28,75 @@ function App() {
   const [editedText, setEditedText] = useState("");
   const [editedPriority, setEditedPriority] = useState("High");
   const [editedDate, setEditedDate] = useState("");
+  const [isDragMode, setIsDragMode] = useState(true); // Kéo thả hay sắp xếp tự động
+  const [currentUser, setCurrentUser] = useState(null);
 
   const inputRef = useRef(null);
 
-  useEffect(() => {
-    const savedTasks = JSON.parse(localStorage.getItem("task")) || [];
-    setTasks(savedTasks);
-  }, []);
+  // useEffect(() => {
+  //   const savedTasks = JSON.parse(localStorage.getItem("task")) || [];
+  //   setTasks(savedTasks);
+  // }, []);
 
+  // useEffect(() => {
+  //   localStorage.setItem("task", JSON.stringify(tasks));
+  // }, [tasks]);
+
+  // const loadTasksFromFirestore = async (userId) => {
+  //   try {
+  //     const tasksRef = collection(db, "tasks");
+  //     const q = query(tasksRef, where("userId", "==", userId));
+  //     const querySnapshot = await getDocs(q);
+
+  //     const userTasks = querySnapshot.docs.map((doc) => doc.data());
+  //     setTasks(userTasks[0]?.tasks || []);
+  //   } catch (error) {
+  //     console.error("Error loading tasks:", error);
+  //   }
+  // };
+
+  // Save tasks to Firestore
+
+  const saveTasksToFirestore = async (userId, tasks) => {
+    try {
+      const tasksRef = doc(db, "tasks", userId);
+      await setDoc(tasksRef, { userId, tasks });
+    } catch (error) {
+      console.error("Error saving tasks:", error);
+    }
+  };
+
+  // Load tasks in real-time
   useEffect(() => {
-    localStorage.setItem("task", JSON.stringify(tasks));
-  }, [tasks]);
+    if (!currentUser) {
+      setTasks([]);
+      return;
+    }
+
+    const tasksRef = doc(db, "tasks", currentUser.uid);
+    const unsubscribe = onSnapshot(tasksRef, (doc) => {
+      if (doc.exists()) {
+        setTasks(doc.data()?.tasks || []);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [currentUser]);
+
+  // Save tasks with debounce
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const timeout = setTimeout(() => {
+      saveTasksToFirestore(currentUser.uid, tasks);
+    }, 500); // Debounce 500ms
+
+    return () => clearTimeout(timeout);
+  }, [tasks, currentUser]);
 
   const addTask = () => {
     const newTask = task.trim();
-    if (!newTask) return true;
+    if (!newTask) return;
 
     const newTaskObject = {
       id: Date.now(),
@@ -49,7 +116,6 @@ function App() {
     setTasks((prev) => prev.filter((task) => task.id !== id));
   };
 
-  // Chinh sua task
   const startEdit = (task) => {
     setEditingId(task.id);
     setEditedText(task.text);
@@ -88,7 +154,7 @@ function App() {
 
   const toggleCompleted = (id) => {
     setTasks((prev) =>
-      prev.map((task, i) =>
+      prev.map((task) =>
         task.id === id ? { ...task, isCompleted: !task.isCompleted } : task
       )
     );
@@ -101,8 +167,7 @@ function App() {
     );
   };
 
-  // xac dinh deadline cua task
-  const isNearDeadLine = (dueDate) => {
+  const isNearDeadline = (dueDate) => {
     if (dueDate === "No deadline") return false;
     const today = new Date();
     const deadline = new Date(dueDate);
@@ -110,123 +175,86 @@ function App() {
     return difference <= 3;
   };
 
-  // Loc task theo ky tu search, trang thai, hien thi tasks da duoc sort
-  const filteredTasks = sortTasks([...tasks]).filter((task) => {
-    const matchesFilter =
-      filter === "all" ||
-      (filter === "completed" && task.isCompleted) ||
-      (filter === "incompleted" && !task.isCompleted) ||
-      (filter === "nearDeadline" && isNearDeadLine(task.date));
+  const filteredTasks = (isDragMode ? tasks : sortTasks([...tasks])).filter(
+    (task) => {
+      const matchesFilter =
+        filter === "all" ||
+        (filter === "completed" && task.isCompleted) ||
+        (filter === "incompleted" && !task.isCompleted) ||
+        (filter === "nearDeadline" && isNearDeadline(task.date));
 
-    const matchesSearch = task.text
-      .toLowerCase()
-      .includes(searchText.toLowerCase());
+      const matchesSearch = task.text
+        .toLowerCase()
+        .includes(searchText.toLowerCase());
 
-    return matchesSearch && matchesFilter;
-  });
+      return matchesSearch && matchesFilter;
+    }
+  );
+
+  const handleDragEnd = (result) => {
+    if (!isDragMode) return; // Không xử lý nếu không ở chế độ kéo thả
+    const { source, destination } = result;
+
+    if (!destination) return;
+    if (source.index === destination.index) return;
+
+    const reorderedTasks = Array.from(tasks);
+    const [movedTask] = reorderedTasks.splice(source.index, 1);
+    reorderedTasks.splice(destination.index, 0, movedTask);
+
+    setTasks(reorderedTasks);
+  };
+
+  if (!currentUser) {
+    return <Auth onLogin={(user) => setCurrentUser(user)} />;
+  }
 
   return (
     <div className="container">
-      <h1 className="header">My Todolist</h1>
-
-      {/* Thanh tim kiem */}
+      <h1>My Todo List</h1>
+      <ModeSwitch isDragMode={isDragMode} setIsDragMode={setIsDragMode} />
       <input
         type="text"
+        placeholder="Search..."
         className="search-input"
         value={searchText}
         onChange={(e) => setSearchText(e.target.value)}
       />
-
-      {/* Phan loai task theo trang thai */}
-      <div className="filter-container">
-        <button
-          className={`filter-button ${filter === "all" ? "active" : ""}`}
-          onClick={() => setFilter("all")}
-        >
-          All
-        </button>
-
-        <button
-          className={`filter-button ${filter === "completed" ? "active" : ""}`}
-          onClick={() => setFilter("completed")}
-        >
-          Completed
-        </button>
-
-        <button
-          className={`filter-button ${
-            filter === "incompleted" ? "active" : ""
-          }`}
-          onClick={() => setFilter("incompleted")}
-        >
-          Incompleted
-        </button>
-
-        <button
-          className={`filter-button ${
-            filter === "nearDeadline" ? "active" : ""
-          }`}
-          onClick={() => setFilter("nearDeadline")}
-        >
-          Near Deadline
-        </button>
-      </div>
-
-      {/* Them task */}
-      <div className="add-task-container">
-        <input
-          type="text"
-          className="add-task-input"
-          placeholder="Add task..."
-          value={task}
-          ref={inputRef}
-          onChange={(e) => setTask(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addTask()}
-        />
-
-        <select
-          className="priority-dropdown"
-          value={priority}
-          onChange={(e) => setPriority(e.target.value)}
-        >
-          <option value="High">High</option>
-          <option value="Medium">Medium</option>
-          <option value="Low">Low</option>
-        </select>
-
-        <input
-          type="date"
-          className="due-date-input"
-          value={dueDate}
-          onChange={(e) => setDueDate(e.target.value)}
-        />
-
-        <button className="add-task-button" onClick={addTask}>
-          Add
-        </button>
-      </div>
-
-      {/* List task */}
-      <ul className="task-list">
-        {filteredTasks.map((task, index) => (
-          <TaskList
-            key={task.id}
-            task={task}
-            deleteTask={() => deleteTask(task.id)}
-            toggleCompleted={() => toggleCompleted(task.id)}
-            startEdit={startEdit}
-            saveEdit={saveEdit}
-            cancelEdit={cancelEdit}
-            isEditing={editingId === task.id}
-            editedText={editedText}
-            setEditedText={setEditedText}
-            editedPriority={editedPriority}
-            setEditedPriority={setEditedPriority}
-            editedDate={editedDate}
-            setEditedDate={setEditedDate}
-          />
-        ))}
-      </ul>
+      <Filter filter={filter} setFilter={setFilter} />
+      <AddTask
+        task={task}
+        setTask={setTask}
+        priority={priority}
+        setPriority={setPriority}
+        dueDate={dueDate}
+        setDueDate={setDueDate}
+        addTask={addTask}
+        inputRef={inputRef}
+      />
+      <DragDropContext onDragEnd={handleDragEnd}>
+        <Droppable droppableId="taskList">
+          {(provided) => (
+            <div ref={provided.innerRef} {...provided.droppableProps}>
+              <TaskList
+                tasks={filteredTasks}
+                toggleCompleted={toggleCompleted}
+                startEdit={startEdit}
+                deleteTask={deleteTask}
+                isEditing={editingId}
+                editedText={editedText}
+                setEditedText={setEditedText}
+                editedPriority={editedPriority}
+                setEditedPriority={setEditedPriority}
+                editedDate={editedDate}
+                setEditedDate={setEditedDate}
+                saveEdit={saveEdit}
+                cancelEdit={cancelEdit}
+              />
+              {provided.placeholder}
+            </div>
+          )}
+        </Droppable>
+      </DragDropContext>
     </div>
   );
 }
